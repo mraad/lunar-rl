@@ -409,6 +409,46 @@ the CNN. No device flag touches that. Raise `--num-envs` first; if that is not
 enough, rasterise the observation from the state vector on the GPU rather than
 asking the env to render it.
 
+---
+
+## Reproducibility
+
+Both checkpoints are committed here and attached to the
+[v0.1.0 release](https://github.com/mraad/lunar-rl/releases/tag/v0.1.0), so every
+number in this README can be checked without retraining anything:
+
+```bash
+uv run lunar-rl-view --ckpt lunar_agent_robust.pt --episodes 8 --greedy --seed 0
+```
+
+| checkpoint | sha256 | produced by |
+|---|---|---|
+| `lunar_agent.pt` | `06bed623…958faec7` | `uv run lunar-rl --total-steps 2500000 --num-envs 16 --device cpu` |
+| `lunar_agent_robust.pt` | `b9a3d2b5…e0e712f9` | `uv run lunar-rl --total-steps 3500000 --num-envs 16 --device mps --start-x 6 --start-tilt 0.5` |
+
+```
+$ shasum -a 256 lunar_agent.pt lunar_agent_robust.pt
+06bed623de41bee8283b7168533796b6a373f0ec57fb13f87694db31958faec7  lunar_agent.pt
+b9a3d2b5aa70d452f2a6f586e496e765c26c5e35424b18d5f386cb8be0e712f9  lunar_agent_robust.pt
+```
+
+Trained and measured on:
+
+| | |
+|---|---|
+| platform | macOS, Apple M4 Max (arm64) |
+| python | 3.12.12 |
+| torch | 2.13.0 |
+| gymnasium | 1.3.0 |
+| numpy | 2.5.2 |
+
+`uv.lock` pins the full dependency graph, and seeds are fixed (`--seed`, default
+1). **Retraining will not reproduce these weights bit-for-bit** — Box2D, MPS and
+CUDA kernels are not deterministic across backends or hardware, and PyTorch makes
+no cross-device bitwise guarantee. Expect the same learning curve shape and final
+performance band, not identical numbers. The checkpoints are shipped precisely so
+that evaluation results *are* exactly reproducible.
+
 ## Known ceilings
 
 - Truncation is treated as termination in the GAE recursion. LunarLander truncates
@@ -424,3 +464,9 @@ asking the env to render it.
   it. Cheaper than subclassing `LunarLander`, and it reuses the env's own
   observation derivation — but it does depend on `lander`/`legs` staying public
   on the unwrapped env.
+
+---
+
+## License
+
+[Apache-2.0](LICENSE). Copyright 2026 mraad.
