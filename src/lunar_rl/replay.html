@@ -1,0 +1,401 @@
+<title>Lunar Lander Replay</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --void:#070B0F; --panel:#0E151C; --sunk:#121B23; --line:#1E2A34;
+  --ink:#DCE6EC; --dim:#7A8B98; --teal:#4FBFB2; --amber:#E0913F;
+  --bad:#E05B5B; --good:#63C382;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --disp:"Archivo","Helvetica Neue",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+body{background:var(--void);color:var(--ink);font-family:var(--mono);font-size:13px;
+  line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1240px;margin:0 auto;padding:22px 20px 40px}
+
+header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:18px;
+  padding-bottom:16px;border-bottom:1px solid var(--line)}
+h1{font-family:var(--disp);font-weight:700;font-size:1.5rem;letter-spacing:-.02em;
+  margin:0;color:var(--ink)}
+.sub{color:var(--dim);font-size:11.5px;letter-spacing:.04em}
+.sub b{color:var(--teal);font-weight:500}
+
+.eps{display:flex;flex-wrap:wrap;gap:6px;margin:16px 0}
+.ep{font-family:var(--mono);font-size:11.5px;background:var(--panel);color:var(--dim);
+  border:1px solid var(--line);border-radius:2px;padding:6px 11px;cursor:pointer;
+  display:flex;gap:9px;align-items:center}
+.ep:hover{border-color:var(--dim);color:var(--ink)}
+.ep:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.ep[aria-pressed="true"]{border-color:var(--teal);color:var(--ink);background:var(--sunk)}
+.ep .r{font-variant-numeric:tabular-nums}
+.ep .st{color:#5C6B77;font-variant-numeric:tabular-nums}
+.ep[aria-pressed="true"] .st{color:var(--teal)}
+.ep .dot{width:6px;height:6px;border-radius:50%;background:var(--bad)}
+.ep.ok .dot{background:var(--good)}
+
+.grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(280px,1fr);
+  gap:16px;margin-top:4px;align-items:start}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:14px}
+.card h2{font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--dim);margin:0 0 12px}
+
+#stage{width:100%;aspect-ratio:20/13.333;display:block;background:#04070A;
+  border:1px solid var(--line);border-radius:2px}
+
+.controls{display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}
+button.play{font-family:var(--mono);font-size:12px;font-weight:600;background:var(--teal);
+  color:#04100E;border:0;border-radius:2px;padding:7px 16px;cursor:pointer;min-width:74px}
+button.play:hover{filter:brightness(1.12)}
+button.play:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+input[type=range]{flex:1;min-width:140px;accent-color:var(--teal);background:transparent}
+select{font-family:var(--mono);font-size:11.5px;background:var(--sunk);color:var(--ink);
+  border:1px solid var(--line);border-radius:2px;padding:6px 8px}
+.tick{font-variant-numeric:tabular-nums;color:var(--dim);font-size:11.5px;white-space:nowrap}
+
+.side{display:flex;flex-direction:column;gap:16px}
+.tele{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:2px;overflow:hidden}
+.tele div{background:var(--panel);padding:8px 10px}
+.tele .k{color:var(--dim);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+.tele .v{color:var(--ink);font-size:15px;font-variant-numeric:tabular-nums;margin-top:2px}
+.tele .v.on{color:var(--good)}
+
+.act{display:flex;flex-direction:column;gap:7px}
+.arow{display:grid;grid-template-columns:96px 1fr 40px;gap:9px;align-items:center;font-size:11.5px}
+.arow .nm{color:var(--dim)}
+.arow.sel .nm{color:var(--ink)}
+.track{height:9px;background:var(--sunk);border-radius:1px;overflow:hidden}
+.fill{height:100%;background:var(--teal);width:0;transition:width .06s linear}
+.arow.sel .fill{background:var(--amber)}
+.arow .pc{text-align:right;color:var(--dim);font-variant-numeric:tabular-nums}
+
+#trace,#attn{width:100%;display:block;background:var(--sunk);
+  border:1px solid var(--line);border-radius:2px}
+#trace{height:132px}
+#attn{height:52px}
+.axis{display:flex;justify-content:space-between;color:var(--dim);font-size:10px;
+  letter-spacing:.06em;margin-top:6px}
+.hint{color:var(--dim);font-size:11px;margin:9px 0 0;line-height:1.55}
+kbd{font-family:var(--mono);font-size:10.5px;background:var(--sunk);border:1px solid var(--line);
+  border-radius:2px;padding:1px 5px;color:var(--ink)}
+@media (max-width:880px){.grid{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){.fill{transition:none}}
+</style>
+
+<div class="wrap">
+<header>
+  <div>
+    <h1>Lunar Lander Replay</h1>
+    <div class="sub" id="meta"></div>
+  </div>
+</header>
+
+<div class="eps" id="eps" role="group" aria-label="Episodes"></div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Descent</h2>
+    <canvas id="stage" width="1000" height="667"></canvas>
+    <div class="controls">
+      <button class="play" id="play" type="button">Play</button>
+      <input type="range" id="scrub" min="0" max="0" value="0" aria-label="Timeline">
+      <span class="tick" id="tick">0 / 0</span>
+      <select id="speed" aria-label="Playback speed">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+      </select>
+    </div>
+    <p class="hint"><kbd>space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> step · <kbd>1</kbd>–<kbd>9</kbd> episode</p>
+  </div>
+
+  <div class="side">
+    <div class="card">
+      <h2>Telemetry</h2>
+      <div class="tele">
+        <div><div class="k">x</div><div class="v" id="t-x">—</div></div>
+        <div><div class="k">altitude</div><div class="v" id="t-y">—</div></div>
+        <div><div class="k">vx</div><div class="v" id="t-vx">—</div></div>
+        <div><div class="k">vy</div><div class="v" id="t-vy">—</div></div>
+        <div><div class="k">angle</div><div class="v" id="t-a">—</div></div>
+        <div><div class="k">ang. rate</div><div class="v" id="t-w">—</div></div>
+        <div><div class="k">legs down</div><div class="v" id="t-l">—</div></div>
+        <div><div class="k">return</div><div class="v" id="t-r">—</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Policy</h2>
+      <div class="act" id="act"></div>
+    </div>
+
+    <div class="card">
+      <h2>Critic — V(s) and cumulative reward</h2>
+      <canvas id="trace" width="800" height="264"></canvas>
+      <div class="axis"><span style="color:var(--teal)" id="tr-v">V(s)</span><span style="color:var(--amber)" id="tr-c">Σ reward</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Attention — last layer, head mean</h2>
+      <canvas id="attn" width="800" height="104"></canvas>
+      <div class="axis"><span id="at-old">t−31</span><span>window the current step is reading</span><span>t</span></div>
+      <p class="hint">Bright cells are the timesteps this decision actually conditioned on. Early in an episode the window is mostly padding, masked out by the episode mask.</p>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const D = __REPLAY_DATA__;
+const M = D.meta, EPS = D.episodes;
+const [W, H] = M.world, LEG_DOWN = M.leg_down;
+const FPS = 50;
+
+let ei = 0, i = 0, playing = false, speed = 1, acc = 0, last = 0;
+
+const $ = (id) => document.getElementById(id);
+const stage = $('stage'), sx = stage.getContext('2d');
+const trace = $('trace'), tx = trace.getContext('2d');
+const attnC = $('attn'), ax = attnC.getContext('2d');
+
+const spawn = (M.start_x || M.start_tilt)
+  ? `spawn ±${M.start_x.toFixed(1)} off-pad, tilt ±${(M.start_tilt * 57.2958).toFixed(0)}°`
+  : 'centred spawn';
+$('meta').innerHTML = `<b>${M.ckpt}</b> · context ${M.ctx} (burn-in ${M.burn_in})` +
+  ` · ${M.pixels ? 'pixel' : 'vector'} obs · ${M.policy} policy · ${spawn} · ${EPS.length} episodes`;
+
+/* ---------- episode tabs ---------- */
+const epsBox = $('eps');
+EPS.forEach((e, k) => {
+  const b = document.createElement('button');
+  b.className = 'ep' + (e.landed ? ' ok' : '');
+  b.type = 'button';
+  const deg = (e.start ? e.start[1] : 0) * 57.2958;
+  const off = e.start ? e.start[0] : 0;
+  b.innerHTML = `<span class="dot"></span>seed ${e.seed}` +
+    `<span class="st">x ${off >= 0 ? '+' : ''}${off.toFixed(1)} · ${deg >= 0 ? '+' : ''}${deg.toFixed(0)}°</span>` +
+    `<span class="r">${e.return > 0 ? '+' : ''}${e.return}</span>`;
+  b.onclick = () => select(k);
+  epsBox.appendChild(b);
+});
+
+/* ---------- policy rows ---------- */
+const rows = M.actions.map((name) => {
+  const d = document.createElement('div');
+  d.className = 'arow';
+  d.innerHTML = `<span class="nm">${name}</span><span class="track"><span class="fill"></span></span><span class="pc">0%</span>`;
+  $('act').appendChild(d);
+  return d;
+});
+
+/* ---------- world transform ---------- */
+function fit() {
+  const s = Math.min(stage.width / W, stage.height / H);
+  return { s, ox: (stage.width - W * s) / 2, oy: stage.height - (stage.height - H * s) / 2 };
+}
+const PX = (st, hy) => st[0] * (W / 2) + W / 2;
+const PY = (st, hy) => st[1] * (H / 2) + (hy + LEG_DOWN);
+
+function drawWorld() {
+  const ep = EPS[ei], st = ep.state[i], hy = ep.helipad[2];
+  const { s, ox, oy } = fit();
+  const X = (wx) => ox + wx * s, Y = (wy) => oy - wy * s;
+
+  sx.clearRect(0, 0, stage.width, stage.height);
+  sx.fillStyle = '#04070A';
+  sx.fillRect(0, 0, stage.width, stage.height);
+
+  // terrain
+  sx.beginPath();
+  sx.moveTo(X(ep.terrain[0][0]), Y(ep.terrain[0][1]));
+  ep.terrain.forEach((p) => sx.lineTo(X(p[0]), Y(p[1])));
+  sx.lineTo(X(W), Y(0)); sx.lineTo(X(0), Y(0)); sx.closePath();
+  sx.fillStyle = '#0F1820'; sx.fill();
+  sx.strokeStyle = '#31424E'; sx.lineWidth = 1.5; sx.stroke();
+
+  // helipad flags
+  sx.strokeStyle = '#E0913F'; sx.fillStyle = '#E0913F'; sx.lineWidth = 1.5;
+  [ep.helipad[0], ep.helipad[1]].forEach((fx) => {
+    sx.beginPath(); sx.moveTo(X(fx), Y(hy)); sx.lineTo(X(fx), Y(hy + 1)); sx.stroke();
+    sx.beginPath(); sx.moveTo(X(fx), Y(hy + 1)); sx.lineTo(X(fx) + 13, Y(hy + 0.82));
+    sx.lineTo(X(fx), Y(hy + 0.66)); sx.closePath(); sx.fill();
+  });
+
+  // spawn marker — the pad is centred, so an off-pad start is only obvious with it
+  const s0 = ep.state[0], sx0 = X(PX(s0)), sy0 = Y(PY(s0, hy));
+  sx.beginPath(); sx.arc(sx0, sy0, 4, 0, 6.284);
+  sx.strokeStyle = 'rgba(79,191,178,.55)'; sx.lineWidth = 1.2; sx.stroke();
+  sx.beginPath(); sx.moveTo(sx0, sy0); sx.lineTo(sx0, Y(0));
+  sx.setLineDash([3, 6]); sx.strokeStyle = 'rgba(79,191,178,.18)'; sx.stroke();
+  sx.setLineDash([]);
+
+  // trail
+  sx.beginPath();
+  for (let k = Math.max(0, i - 220); k <= i; k++) {
+    const p = ep.state[k], px = X(PX(p)), py = Y(PY(p, hy));
+    k === Math.max(0, i - 220) ? sx.moveTo(px, py) : sx.lineTo(px, py);
+  }
+  sx.strokeStyle = 'rgba(79,191,178,.42)'; sx.lineWidth = 1.4; sx.stroke();
+
+  // lander
+  const cx = X(PX(st)), cy = Y(PY(st, hy)), ang = st[4], act = ep.act[i];
+  sx.save(); sx.translate(cx, cy); sx.rotate(-ang); sx.scale(s, -s);
+
+  const flame = (dx, dy, w, len) => {
+    const f = len * (0.72 + 0.28 * Math.sin(i * 1.7));
+    sx.beginPath(); sx.moveTo(dx - w, dy); sx.lineTo(dx + w, dy); sx.lineTo(dx, dy - f);
+    sx.closePath(); sx.fillStyle = '#E0913F'; sx.fill();
+  };
+  const sideFlame = (dir) => {  // dir -1 = left engine, +1 = right engine
+    const f = 0.46 * (0.72 + 0.28 * Math.sin(i * 1.7));
+    sx.beginPath();
+    sx.moveTo(dir * 0.57, 0.1); sx.lineTo(dir * 0.57, -0.1); sx.lineTo(dir * (0.57 + f), 0);
+    sx.closePath(); sx.fillStyle = '#E0913F'; sx.fill();
+  };
+  if (act === 2) flame(0, -0.34, 0.2, 1.05);
+  if (act === 1) sideFlame(-1);
+  if (act === 3) sideFlame(1);
+
+  sx.beginPath();
+  M.lander_poly.forEach((p, k) => (k ? sx.lineTo(p[0], p[1]) : sx.moveTo(p[0], p[1])));
+  sx.closePath();
+  sx.fillStyle = '#1E2E38'; sx.fill();
+  sx.lineWidth = 2.2 / s; sx.strokeStyle = '#8FA6B4'; sx.stroke();
+
+  const [away, down, lw, lh] = M.leg;
+  [-1, 1].forEach((sgn, k) => {
+    sx.beginPath();
+    sx.moveTo(sgn * away * 0.5, -down * 0.4);
+    sx.lineTo(sgn * away, -down);
+    sx.lineWidth = (st[6 + k] ? 3.4 : 2.2) / s;
+    sx.strokeStyle = st[6 + k] ? '#63C382' : '#8FA6B4';
+    sx.stroke();
+  });
+  sx.restore();
+}
+
+/* ---------- critic trace ---------- */
+function drawTrace() {
+  // Two panes, each self-scaled. V(s) spans tens while cumulative reward spans
+  // hundreds; sharing one axis flattens the critic into a straight line.
+  const ep = EPS[ei], n = ep.val.length, w = trace.width, h = trace.height, pad = 7;
+  const cum = []; let c = 0;
+  for (const r of ep.rew) { c += r; cum.push(c); }
+  const X = (k) => pad + (k / (n - 1 || 1)) * (w - 2 * pad);
+
+  tx.clearRect(0, 0, w, h);
+  const pane = (arr, color, top, bot) => {
+    const lo = Math.min(...arr), hi = Math.max(...arr), rng = hi - lo || 1;
+    const Y = (v) => bot - pad - ((v - lo) / rng) * (bot - top - 2 * pad);
+    if (lo <= 0 && hi >= 0) {
+      tx.beginPath(); tx.moveTo(pad, Y(0)); tx.lineTo(w - pad, Y(0));
+      tx.strokeStyle = '#1E2A34'; tx.lineWidth = 1; tx.stroke();
+    }
+    tx.beginPath();
+    arr.forEach((v, k) => (k ? tx.lineTo(X(k), Y(v)) : tx.moveTo(X(k), Y(v))));
+    tx.strokeStyle = color; tx.lineWidth = 2; tx.stroke();
+    tx.beginPath(); tx.arc(X(i), Y(arr[i]), 3.4, 0, 6.284);
+    tx.fillStyle = color; tx.fill();
+    return [lo, hi];
+  };
+  const mid = h / 2;
+  const [vlo, vhi] = pane(ep.val, '#4FBFB2', 0, mid);
+  const [clo, chi] = pane(cum, '#E0913F', mid, h);
+
+  tx.beginPath(); tx.moveTo(pad, mid); tx.lineTo(w - pad, mid);
+  tx.strokeStyle = '#141D25'; tx.lineWidth = 1; tx.stroke();
+  tx.beginPath(); tx.moveTo(X(i), 0); tx.lineTo(X(i), h);
+  tx.strokeStyle = 'rgba(220,230,236,.4)'; tx.lineWidth = 1.5; tx.stroke();
+
+  $('tr-v').textContent = `V(s)  ${vlo.toFixed(0)} … ${vhi.toFixed(0)}  ·  now ${ep.val[i].toFixed(1)}`;
+  $('tr-c').textContent = `Σ reward  ${clo.toFixed(0)} … ${chi.toFixed(0)}`;
+}
+
+/* ---------- attention strip ---------- */
+function drawAttn() {
+  const a = EPS[ei].attn[i], n = a.length, w = attnC.width, h = attnC.height;
+  const gap = 3, cw = (w - gap * (n - 1)) / n, mx = Math.max(...a) || 1;
+  ax.clearRect(0, 0, w, h);
+  a.forEach((v, k) => {
+    const t = v / mx;
+    ax.fillStyle = `rgba(79,191,178,${0.06 + 0.94 * t})`;
+    const bh = 14 + t * (h - 20);
+    ax.fillRect(k * (cw + gap), h - bh - 3, cw, bh);
+  });
+  $('at-old').textContent = `t−${n - 1}`;
+}
+
+/* ---------- panels ---------- */
+const fmt = (v, n = 2) => (v >= 0 ? '+' : '') + v.toFixed(n);
+function drawPanels() {
+  const ep = EPS[ei], st = ep.state[i];
+  $('t-x').textContent = fmt(st[0]);
+  $('t-y').textContent = fmt(st[1]);
+  $('t-vx').textContent = fmt(st[2]);
+  $('t-vy').textContent = fmt(st[3]);
+  $('t-a').textContent = fmt(st[4] * 57.2958, 1) + '°';
+  $('t-w').textContent = fmt(st[5]);
+  const legs = st[6] + st[7];
+  const le = $('t-l'); le.textContent = legs + ' / 2'; le.className = 'v' + (legs === 2 ? ' on' : '');
+  let c = 0; for (let k = 0; k <= i; k++) c += ep.rew[k];
+  $('t-r').textContent = fmt(c, 1);
+
+  const p = ep.prob[i], sel = ep.act[i];
+  rows.forEach((row, k) => {
+    row.classList.toggle('sel', k === sel);
+    row.querySelector('.fill').style.width = (p[k] * 100).toFixed(1) + '%';
+    row.querySelector('.pc').textContent = Math.round(p[k] * 100) + '%';
+  });
+}
+
+function render() {
+  drawWorld(); drawTrace(); drawAttn(); drawPanels();
+  $('scrub').value = i;
+  $('tick').textContent = `${i} / ${EPS[ei].act.length - 1}`;
+}
+
+/* ---------- transport ---------- */
+function select(k) {
+  ei = k; i = 0;
+  [...epsBox.children].forEach((b, j) => b.setAttribute('aria-pressed', j === k));
+  $('scrub').max = EPS[k].act.length - 1;
+  render();
+}
+function seek(k) {
+  i = Math.max(0, Math.min(EPS[ei].act.length - 1, k));
+  render();
+}
+function setPlay(on) {
+  playing = on;
+  $('play').textContent = on ? 'Pause' : 'Play';
+  if (on && i >= EPS[ei].act.length - 1) i = 0;
+  last = performance.now();
+}
+$('play').onclick = () => setPlay(!playing);
+$('scrub').oninput = (e) => { setPlay(false); seek(+e.target.value); };
+$('speed').onchange = (e) => (speed = +e.target.value);
+addEventListener('keydown', (e) => {
+  if (e.key === ' ') { e.preventDefault(); setPlay(!playing); }
+  else if (e.key === 'ArrowRight') { setPlay(false); seek(i + 1); }
+  else if (e.key === 'ArrowLeft') { setPlay(false); seek(i - 1); }
+  else if (e.key >= '1' && e.key <= '9' && EPS[+e.key - 1]) select(+e.key - 1);
+});
+
+function loop(now) {
+  if (playing) {
+    acc += (now - last) / 1000 * FPS * speed;
+    last = now;
+    if (acc >= 1) {
+      const step = Math.floor(acc); acc -= step;
+      if (i + step >= EPS[ei].act.length - 1) { seek(EPS[ei].act.length - 1); setPlay(false); }
+      else seek(i + step);
+    }
+  } else { last = now; }
+  requestAnimationFrame(loop);
+}
+select(0);
+requestAnimationFrame(loop);
+</script>
