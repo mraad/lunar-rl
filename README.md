@@ -278,7 +278,7 @@ src/lunar_rl/replay.html  the SPA template (one __REPLAY_DATA__ placeholder)
 ```
 
 Two checkpoints ship: `lunar_agent.pt` (centred starts, +282.6) and
-`lunar_agent_robust.pt` (randomised starts, +276.0 on the harder distribution).
+`lunar_agent_robust.pt` (randomised starts, +306.8 on the harder distribution).
 
 Two source files. Flags come from the `Config` dataclass — every field is a
 `--kebab-case` CLI arg automatically.
@@ -309,6 +309,33 @@ descents, not the hovering that an under-trained policy settles into.
 Pixel mode is **render-bound**, not compute-bound: Box2D's `rgb_array` render
 dominates. Raise `--num-envs` first (the `AsyncVectorEnv` parallelises rendering
 across processes); move to CUDA only after that stops helping.
+
+### Seed variance
+
+The single-seed caveat is measurable, so here it is measured. Four seeds of each
+recipe, identical except `--seed`, trained concurrently across the two GPUs and
+evaluated greedily on **20 held-out seeds (100-119)** that neither training nor
+any published table above touches:
+
+| recipe | seed 1 | seed 2 | seed 3 | seed 4 | shipped |
+|---|---:|---:|---:|---:|---:|
+| centred, centred starts | 286.2 | 283.5 | 269.1 | 285.0 | **289.7** |
+| robust, off-pad starts | **330.4** | 324.9 | 322.7 | 328.4 | 320.9 |
+
+Two things fall out. The shipped `lunar_agent.pt` is already the best centred
+policy on this evidence — reseeding does **not** improve it, and seed 3 lands
+only 17/20 — so a single reported number overstates its precision by roughly the
+17-point spread of its own recipe. On the robust recipe every seed beats the
+shipped checkpoint, the best by +9.5.
+
+Re-scored on 50 further unseen seeds (200-249), that best seed holds a smaller
+but real edge over the shipped robust weights: mean +15.1 (bootstrap 95% CI
+[+4.8, +32.8]), median +6.9, better on 33/50 seeds (sign test p = 0.033). The
+reliability gap is the clearer half — 50/50 landings against 49/50, return
+std 16.4 against 55.9, worst case +286.9 against −66.2, and 204 steps per episode
+against 238. The shipped weights are retained here because replacing them
+invalidates the committed checksums and the release assets; promoting the better
+seed is a release decision, not a documentation one.
 
 ---
 
@@ -355,6 +382,116 @@ device busy. The two multiply.
 > These numbers are Apple MPS. On CUDA the absolute figures differ and
 > launch-overhead behaviour at tiny batch is its own story — but the ordering of
 > the levers below holds, and every row above is reproducible with one command.
+
+### On CUDA — 2 × RTX PRO 6000 Blackwell
+
+Same protocol on a Linux box with two Blackwell cards (94 GiB each, sm_120), 48
+CPU cores, torch 2.13.0+cu130. Each row is **20 PPO iterations**
+(`total_steps = 20 × 128 × envs`), so every config is measured at steady state
+instead of being dominated by startup:
+
+| device | envs | steps/s | vs cpu-16 |
+|---|---:|---:|---:|
+| cpu | 16 | 1 867 | 1.0× |
+| cuda | 16 | 2 729 | 1.5× |
+| cpu | 128 | 7 196 | 3.9× |
+| cuda | 128 | 13 677 | 7.3× |
+| cpu | 512 | 10 337 | 5.5× |
+| cuda | 512 | 24 857 | 13.3× |
+| cuda | 1024 | 27 478 | 14.7× |
+| cuda | 2048 | 27 627 | **14.8×** |
+| cuda | 4096 | 26 823 | 14.4× |
+
+```bash
+uv run lunar-rl --total-steps 1310720 --num-envs 512  --device cuda  # the 512 row
+uv run lunar-rl --total-steps 5242880 --num-envs 2048 --device cuda  # the fastest row
+```
+
+The MPS ordering holds — the accelerator wins at every width, and `--num-envs` is
+the larger lever — but **the environment ceiling arrives early and then bites
+back**. Widening 16→128 buys 5.0×, 128→512 buys 1.8×, 512→1024 buys 1.1×,
+1024→2048 buys nothing (1.005×), and 2048→4096 is a *regression* to 0.97×.
+Throughput peaks at **2048 envs**; past that the per-step Python work over a wider
+batch costs more than the extra parallelism returns. Vector mode uses
+`SyncVectorEnv`, which steps Box2D serially in one Python process, so past roughly
+512 envs you are timing the physics rather than the policy. This is the same wall
+the ladder below describes, hit from the other side: on this hardware, tuning the
+model is not worth doing until the environment leaves the CPU.
+
+The turnover is not run-to-run noise. The 512 and 1024 rows were measured twice,
+hours apart — 24 915 / 27 568 the first time against 24 857 / 27 478 here — and
+agree to within 0.3%.
+
+#### The GPU is idle, not small
+
+Sampling `nvidia-smi` once a second through each run, averaged over the
+steady-state half of the window:
+
+| envs | steps/s | mean util | peak util | VRAM |
+|---:|---:|---:|---:|---:|
+| 512 | 24 857 | 17% | 84% | 2.2 GiB |
+| 1024 | 27 478 | 14% | 92% | 3.6 GiB |
+| 2048 | 27 627 | 18% | 97% | 6.3 GiB |
+| 4096 | 26 823 | 21% | 99% | 11.9 GiB |
+
+The mean and the peak together are the whole argument. During the update phase the
+card briefly reaches 84-99%, so the kernels are not the problem — the mean sits at
+14-21% because the card spends the rest of every iteration *waiting* on Box2D
+stepping in one Python process. Widening the batch raises the peak and barely
+moves the mean.
+
+VRAM is a non-issue at this scale: 4096 envs occupy 11.9 GiB of a 94 GiB card, so
+memory would permit roughly 8× more parallelism than the CPU can actually feed.
+Nothing about this workload justifies a card this size.
+
+#### `--pixels` on CUDA needs the bundled cuDNN
+
+On a host with CUDA already installed system-wide, `--pixels --device cuda` used
+to abort in native code before the first log line:
+
+```
+Invalid handle. Cannot load symbol cublasLtGetVersion
+```
+
+The cause is a soname collision, not a fault in the model. A system cuDNN 9.20
+built against CUDA 12 sits on `LD_LIBRARY_PATH` and exports the same
+`libcudnn_*.so.9` sonames as the cu13 wheel torch depends on, so the loader hands
+the convolution engines the system copy — which then dlopens `libcublasLt.so.12`,
+absent on a CUDA 13 box, and the process aborts. Only `--pixels` trips it: the
+vector path never runs a convolution, which is why every table above was
+unaffected and why the failure looks like a pixel-mode bug rather than an
+environment one.
+
+`pin_bundled_cudnn` (`ppo.py`) dlopens the wheel's own cuDNN by absolute path
+before the first conv, so the later resolve-by-soname finds it already loaded.
+No environment variables, and a silent no-op wherever cuDNN is not bundled.
+
+#### `--compile` only pays on long runs
+
+`torch.compile` warmup lands **inside** the timed region, so short runs report it
+as a regression and long ones as a win. Same 512-env config, two horizons:
+
+| config | 1.31 M steps (20 it) | 3.28 M steps (50 it) |
+|---|---:|---:|
+| eager | 24 915 | 23 347 |
+| `--compile` | 19 923 (↓20%) | **25 487** (↑9%) |
+| `--amp` | — | 22 420 (↓4%) |
+| `--compile --amp` | 18 147 (↓27%) | **25 667** (↑10%) |
+
+Warmup costs ~24 s and the crossover falls between 1.3 M and 3.3 M steps, so
+`--compile` belongs on real training runs and not on smoke tests or short sweeps.
+`--amp` is neutral-to-negative here: at `d_model = 128` there is too little
+arithmetic per kernel for bf16 to recover its cast overhead.
+
+#### What the second GPU is for
+
+At 1.2 M parameters with a CPU-bound environment, a second card does nothing for
+a single run — there is no tensor worth sharding and the first card already idles
+through roughly four fifths of every iteration (table above). It buys **concurrency across runs**. Since each `SyncVectorEnv` process
+pins about one core, eight concurrent 16-env trainings fit comfortably on 48
+cores and two cards, holding both at 97-99% utilisation for ~16 000 steps/s
+aggregate — roughly 6 × the single-run 16-env rate. That is what turns the
+single-seed caveat below from a standing limitation into a 30-minute experiment.
 
 ### The rest of the ladder
 
@@ -404,10 +541,28 @@ off-policy lag. A different training loop, not a tuning change.
 
 ### Pixel mode is a different problem
 
-At 17 steps/s, `--pixels` is bound by Box2D's software `rgb_array` render, not by
-the CNN. No device flag touches that. Raise `--num-envs` first; if that is not
-enough, rasterise the observation from the state vector on the GPU rather than
-asking the env to render it.
+At 17 steps/s on the M4, `--pixels` is bound by Box2D's software `rgb_array`
+render, not by the CNN. No device flag touches that. Raise `--num-envs` first; if
+that is not enough, rasterise the observation from the state vector on the GPU
+rather than asking the env to render it.
+
+Measured on CUDA — 20 PPO iterations per row, `AsyncVectorEnv` over 48 cores:
+
+| envs | steps/s | mean util | peak util | VRAM |
+|---:|---:|---:|---:|---:|
+| 4 | 340 | 21% | 50% | 1.5 GiB |
+| 32 | 1 282 | 59% | 92% | 5.9 GiB |
+| 64 | **1 335** | 64% | 96% | 10.3 GiB |
+
+The advice holds: widening 4→32 envs buys 3.8×, 32→64 buys 4%, so the render
+saturates at roughly 32 worker processes and further parallelism is wasted. At
+matched width the card is worth about 20× the M4 (340 against ~17 steps/s).
+
+The utilisation column is the surprise. Pixel mode is the **only** configuration
+in this repo that genuinely loads the GPU — 59-64% mean against 14-21% for vector
+mode — because the Impala CNN is real arithmetic rather than a handful of tiny
+matmuls waiting on Box2D. Vector mode is the faster way to train this agent; pixel
+mode is the only one where the hardware is the thing being used.
 
 ---
 
@@ -442,6 +597,21 @@ Trained and measured on:
 | gymnasium | 1.3.0 |
 | numpy | 2.5.2 |
 
+The CUDA tables and the seed sweep were measured on:
+
+| | |
+|---|---|
+| platform | Linux 6.17 (x86-64), 48 cores |
+| gpu | 2 × NVIDIA RTX PRO 6000 Blackwell Server Edition, 94 GiB, sm_120 |
+| driver | 595.58.03 (CUDA 13.2 runtime) |
+| python | 3.12.13 |
+| torch | 2.13.0+cu130 (CUDA 13.0) |
+| gymnasium | 1.3.0 |
+| numpy | 2.5.2 |
+
+Both shipped checkpoints were re-verified there against their committed
+checksums and reproduce their published evaluation numbers exactly.
+
 `uv.lock` pins the full dependency graph, and seeds are fixed (`--seed`, default
 1). **Retraining will not reproduce these weights bit-for-bit** — Box2D, MPS and
 CUDA kernels are not deterministic across backends or hardware, and PyTorch makes
@@ -458,8 +628,9 @@ that evaluation results *are* exactly reproducible.
 - Acting re-runs the full K-step window per step instead of keeping a KV cache.
   Free to fix if `K` grows past ~64.
 - Nearest-neighbour frame downsampling, to avoid an OpenCV dependency.
-- Single seed. RL variance across seeds is large; the curve above is evidence the
-  loop works, not a benchmark.
+- Single seed per shipped checkpoint. RL variance across seeds is large — see
+  [Seed variance](#seed-variance) for the four-seed spread on both recipes; the
+  curve above is evidence the loop works, not a benchmark.
 - `StartPose` teleports the lander rather than changing how the env constructs
   it. Cheaper than subclassing `LunarLander`, and it reuses the env's own
   observation derivation — but it does depend on `lander`/`legs` staying public
