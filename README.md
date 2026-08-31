@@ -581,8 +581,9 @@ mode is the only one where the hardware is the thing being used.
 
 ## Reproducibility
 
-Both checkpoints are committed here, so every number in this README can be
-checked without retraining anything:
+Both checkpoints are committed here and attached to the
+[v0.1.1 release](https://github.com/mraad/lunar-rl/releases/tag/v0.1.1), so every
+number in this README can be checked without retraining anything:
 
 ```bash
 uv run lunar-rl-view --ckpt lunar_agent_robust.pt --episodes 8 --greedy --seed 0
@@ -595,8 +596,9 @@ uv run lunar-rl-view --ckpt lunar_agent_robust.pt --episodes 8 --greedy --seed 0
 
 The robust weights changed in 0.1.1. The
 [v0.1.0 release](https://github.com/mraad/lunar-rl/releases/tag/v0.1.0) still
-carries the previous pair; `lunar_agent.pt` is identical there, but its
-`lunar_agent_robust.pt` is the 320.9 run the seed table above compares against.
+carries the previous pair, kept for comparison; `lunar_agent.pt` is byte-identical
+across both releases, but its `lunar_agent_robust.pt` is the 320.9 run the seed
+table above measures against.
 
 ```
 $ shasum -a 256 lunar_agent.pt lunar_agent_robust.pt
