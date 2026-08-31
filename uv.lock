@@ -173,7 +173,7 @@ wheels = [
 
 [[package]]
 name = "lunar-rl"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "gymnasium", extra = ["box2d"] },
