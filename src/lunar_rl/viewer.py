@@ -19,7 +19,8 @@ from gymnasium.envs.box2d import lunar_lander as LL
 from torch.distributions import Categorical
 
 from lunar_rl.nets import Agent
-from lunar_rl.ppo import NO_ACTION, Config, History, PixelObs, StartPose, pick_device
+from lunar_rl.ppo import (NO_ACTION, Config, History, PixelObs, StartPose,
+                          pick_device, pin_bundled_cudnn)
 
 TEMPLATE = pathlib.Path(__file__).with_name("replay.html")
 ACTIONS = ["idle", "left engine", "main engine", "right engine"]
@@ -48,6 +49,8 @@ def record(ckpt: str, episodes: int, seed: int, greedy: bool, device_name: str,
     blob = torch.load(ckpt, map_location="cpu", weights_only=True)
     cfg = Config(**blob["cfg"])
     device = pick_device(device_name)
+    if cfg.pixels:
+        pin_bundled_cudnn(device)
     agent = Agent(8, 4, cfg.d_model, cfg.layers, cfg.heads, cfg.pixels).to(device).eval()
     agent.load_state_dict(blob["model"])
 

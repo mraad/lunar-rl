@@ -10,7 +10,9 @@ whose context matches what the actor actually saw.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import math
+import pathlib
 import time
 from dataclasses import dataclass
 
@@ -157,6 +159,34 @@ class Config:
         return self.burn_in + self.chunk
 
 
+def pin_bundled_cudnn(device: torch.device) -> None:
+    """Make the wheel's cuDNN win the soname race against a system CUDA install.
+
+    Some CUDA hosts ship a cuDNN built against CUDA 12 on `LD_LIBRARY_PATH`.  It
+    carries the same `libcudnn_*.so.9` soname as the cu13 wheel torch depends on,
+    so the loader hands the conv engines the system copy, which then dlopens
+    `libcublasLt.so.12` -- absent on a CUDA 13 box.  The process aborts in native
+    code ("Cannot load symbol cublasLtGetVersion") the first time a convolution
+    runs, so it hits `--pixels` only: the vector path has no CNN.
+
+    dlopen-ing the bundled copies by absolute path first means the later
+    resolve-by-soname finds them already loaded.  Silent no-op when cuDNN is not
+    bundled, which is the normal case off Linux.
+    """
+    if device.type != "cuda":
+        return
+    try:
+        import nvidia  # namespace package, so __path__ rather than __file__
+        lib = pathlib.Path(list(nvidia.__path__)[0]) / "cudnn" / "lib"
+    except Exception:
+        return
+    for so in sorted(lib.glob("libcudnn*.so.9")):
+        try:
+            ctypes.CDLL(str(so), mode=ctypes.RTLD_GLOBAL)
+        except OSError:
+            pass
+
+
 def pick_device(name: str) -> torch.device:
     if name != "auto":
         return torch.device(name)
@@ -209,6 +239,8 @@ def train(cfg: Config) -> Agent:
     if cfg.amp and not amp:
         print("--amp ignored: bf16 autocast is CUDA-only here", flush=True)
     autocast = lambda: torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp)
+    if cfg.pixels:  # the CNN is the only user of cuDNN
+        pin_bundled_cudnn(device)
     envs = make_envs(cfg.num_envs, cfg.pixels, cfg.seed, cfg.start_x, cfg.start_tilt)
     obs_dim = 8
     N, T, C = cfg.num_envs, cfg.rollout, cfg.ctx
