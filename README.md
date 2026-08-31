@@ -220,17 +220,18 @@ generalises most of the way but not all of it — on eight off-pad seeds it land
 flags fixes it:
 
 ```bash
-uv run lunar-rl --start-x 6 --start-tilt 0.5 --device mps \
+uv run lunar-rl --start-x 6 --start-tilt 0.5 --device cuda \
                 --total-steps 3500000 --save lunar_agent_robust.pt
 ```
 
 | checkpoint | trained on | 8 off-pad seeds | mean return |
 |---|---|---:|---:|
 | `lunar_agent.pt` | centred starts | 6 / 8 land | +193.7 |
-| `lunar_agent_robust.pt` | ±6 units, ±29° | **8 / 8 land** | **+306.8** |
+| `lunar_agent_robust.pt` | ±6 units, ±29° | **8 / 8 land** | **+313.1** |
 
 The two seeds the centred policy crashed (`x −4.86` and `x −5.74`) recover to
-+258.0 and +299.9. 3.5 M steps, 21 min on MPS.
++276.1 and +309.2. 3.5 M steps, 29 min on one CUDA card — with eight runs sharing
+the box, so treat that as an upper bound rather than a clean single-run time.
 
 **Why not a Rust backend.** The page replays a recorded trajectory — zero
 inference at view time. A server would only be re-serving constants. Rust earns
@@ -278,7 +279,7 @@ src/lunar_rl/replay.html  the SPA template (one __REPLAY_DATA__ placeholder)
 ```
 
 Two checkpoints ship: `lunar_agent.pt` (centred starts, +282.6) and
-`lunar_agent_robust.pt` (randomised starts, +306.8 on the harder distribution).
+`lunar_agent_robust.pt` (randomised starts, +313.1 on the harder distribution).
 
 Two source files. Flags come from the `Config` dataclass — every field is a
 `--kebab-case` CLI arg automatically.
@@ -312,30 +313,42 @@ across processes); move to CUDA only after that stops helping.
 
 ### Seed variance
 
-The single-seed caveat is measurable, so here it is measured. Four seeds of each
+The single-seed caveat is measurable, so here it is measured. Four runs of each
 recipe, identical except `--seed`, trained concurrently across the two GPUs and
 evaluated greedily on **20 held-out seeds (100-119)** that neither training nor
-any published table above touches:
+any published table above touches. The last column is the 0.1.0 checkpoint, same
+recipe, trained on Apple silicon:
 
-| recipe | seed 1 | seed 2 | seed 3 | seed 4 | shipped |
+| recipe | seed 1 | seed 2 | seed 3 | seed 4 | 0.1.0 weights |
 |---|---:|---:|---:|---:|---:|
 | centred, centred starts | 286.2 | 283.5 | 269.1 | 285.0 | **289.7** |
 | robust, off-pad starts | **330.4** | 324.9 | 322.7 | 328.4 | 320.9 |
 
-Two things fall out. The shipped `lunar_agent.pt` is already the best centred
-policy on this evidence — reseeding does **not** improve it, and seed 3 lands
-only 17/20 — so a single reported number overstates its precision by roughly the
-17-point spread of its own recipe. On the robust recipe every seed beats the
-shipped checkpoint, the best by +9.5.
+Two things fall out, and they point opposite ways. `lunar_agent.pt` is already
+the best centred policy on this evidence — rerunning does **not** improve it, and
+seed 3 lands only 17/20 — so a single reported number overstates its precision by
+roughly the 17-point spread of its own recipe. On the robust recipe every run
+beat the 0.1.0 weights, the best by +9.5.
 
-Re-scored on 50 further unseen seeds (200-249), that best seed holds a smaller
-but real edge over the shipped robust weights: mean +15.1 (bootstrap 95% CI
-[+4.8, +32.8]), median +6.9, better on 33/50 seeds (sign test p = 0.033). The
-reliability gap is the clearer half — 50/50 landings against 49/50, return
-std 16.4 against 55.9, worst case +286.9 against −66.2, and 204 steps per episode
-against 238. The shipped weights are retained here because replacing them
-invalidates the committed checksums and the release assets; promoting the better
-seed is a release decision, not a documentation one.
+**Read the seed-1 column carefully.** Both 0.1.0 checkpoints were themselves
+trained at the default `--seed 1`, so that column is not a different seed at all
+— it is the *same* seed on different hardware. Box2D, MPS and CUDA disagree in
+the last bits, the trajectories diverge, and 3.5 M steps later the two runs sit
+9.5 points apart on held-out seeds. Columns 2-4 are the genuine seed re-rolls;
+column 1 measures how much of the "seed variance" here is really backend
+nondeterminism. On this evidence the two effects are the same size, which is the
+more uncomfortable half of the result — a reported return is only reproducible on
+the hardware that produced it, which is precisely why the weights are committed
+rather than a training command.
+
+**0.1.1 ships the seed-1 run.** Re-scored on 50 further unseen seeds (200-249) it
+holds a smaller but real edge over the 0.1.0 robust weights: mean +15.1
+(bootstrap 95% CI [+4.8, +32.8]), median +6.9, better on 33/50 seeds (sign test
+p = 0.033). A paired t-interval spans zero ([−0.95, +31.05]), because a single
+0.1.0 episode crashes to −66.2 and drags the mean; the sign test and the
+bootstrap are the ones to trust here. The reliability gap is the clearer half:
+50/50 landings against 49/50, return std 16.4 against 55.9, worst case +286.9
+against −66.2, and 204 steps per episode against 238.
 
 ---
 
@@ -568,9 +581,8 @@ mode is the only one where the hardware is the thing being used.
 
 ## Reproducibility
 
-Both checkpoints are committed here and attached to the
-[v0.1.0 release](https://github.com/mraad/lunar-rl/releases/tag/v0.1.0), so every
-number in this README can be checked without retraining anything:
+Both checkpoints are committed here, so every number in this README can be
+checked without retraining anything:
 
 ```bash
 uv run lunar-rl-view --ckpt lunar_agent_robust.pt --episodes 8 --greedy --seed 0
@@ -579,15 +591,20 @@ uv run lunar-rl-view --ckpt lunar_agent_robust.pt --episodes 8 --greedy --seed 0
 | checkpoint | sha256 | produced by |
 |---|---|---|
 | `lunar_agent.pt` | `06bed623…958faec7` | `uv run lunar-rl --total-steps 2500000 --num-envs 16 --device cpu` |
-| `lunar_agent_robust.pt` | `b9a3d2b5…e0e712f9` | `uv run lunar-rl --total-steps 3500000 --num-envs 16 --device mps --start-x 6 --start-tilt 0.5` |
+| `lunar_agent_robust.pt` | `122ab5fc…1f2fe2` | `uv run lunar-rl --total-steps 3500000 --num-envs 16 --device cuda --seed 1 --start-x 6 --start-tilt 0.5` |
+
+The robust weights changed in 0.1.1. The
+[v0.1.0 release](https://github.com/mraad/lunar-rl/releases/tag/v0.1.0) still
+carries the previous pair; `lunar_agent.pt` is identical there, but its
+`lunar_agent_robust.pt` is the 320.9 run the seed table above compares against.
 
 ```
 $ shasum -a 256 lunar_agent.pt lunar_agent_robust.pt
 06bed623de41bee8283b7168533796b6a373f0ec57fb13f87694db31958faec7  lunar_agent.pt
-b9a3d2b5aa70d452f2a6f586e496e765c26c5e35424b18d5f386cb8be0e712f9  lunar_agent_robust.pt
+122ab5fcbdacf4936b7da5ab9b11c5b25145bb3775557fa3627f3eeafa1f2fe2  lunar_agent_robust.pt
 ```
 
-Trained and measured on:
+`lunar_agent.pt`, the M4 throughput tables and the spawn study were produced on:
 
 | | |
 |---|---|
@@ -597,7 +614,7 @@ Trained and measured on:
 | gymnasium | 1.3.0 |
 | numpy | 2.5.2 |
 
-The CUDA tables and the seed sweep were measured on:
+`lunar_agent_robust.pt`, the CUDA tables and the seed sweep were produced on:
 
 | | |
 |---|---|
