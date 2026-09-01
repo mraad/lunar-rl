@@ -17,7 +17,7 @@ uv sync
 uv run python -m lunar_rl.nets          # self-check (masking, two-hot, symlog)
 uv run lunar-rl --total-steps 2500000    # reproduces the shipped lunar_agent.pt
 uv run lunar-rl --pixels --num-envs 8    # pixel obs, transformer earns its keep
-uv run lunar-rl-view --greedy --open     # record episodes -> self-contained replay page
+uv run lunar-rl-view --ckpt lunar_agent_robust.pt --seed 0 --greedy  # replay, no auto-open
 ```
 
 ---
@@ -164,12 +164,23 @@ entropy 0.01, grad-norm clip 0.5, linear LR anneal.
 ## Replay viewer
 
 ```bash
-uv run lunar-rl-view --ckpt lunar_agent.pt --episodes 5 --greedy --open
+uv run lunar-rl-view --ckpt lunar_agent_robust.pt --episodes 5 --seed 0 --greedy \
+  --out dist/lunar_replay.html
 ```
 
 Rolls out the trained policy, records every step, and writes a **single
-self-contained `lunar_replay.html`** — trajectories inlined, no server, no build
-step, no CORS. Opens over `file://` and survives being emailed.
+self-contained `dist/lunar_replay.html`** — trajectories inlined, no server, no
+build step, no CORS. Open the generated file directly; it works over `file://`
+and survives being emailed. Add `--open` only when the browser should launch
+automatically.
+
+An HTTP server is optional. When one is useful, run it from the repository root
+and stop it with <kbd>Ctrl-C</kbd>:
+
+```bash
+uv run python -m http.server 8000 --bind 127.0.0.1
+# http://127.0.0.1:8000/dist/lunar_replay.html
+```
 
 Panels:
 
@@ -220,18 +231,17 @@ generalises most of the way but not all of it — on eight off-pad seeds it land
 flags fixes it:
 
 ```bash
-uv run lunar-rl --start-x 6 --start-tilt 0.5 --device cuda \
-                --total-steps 3500000 --save lunar_agent_robust.pt
+uv run lunar-rl --start-x 6 --start-tilt 0.5 --device mps --seed 0 \
+                --total-steps 5000000 --save dist/lunar_agent_robust_candidate.pt
 ```
 
 | checkpoint | trained on | 8 off-pad seeds | mean return |
 |---|---|---:|---:|
 | `lunar_agent.pt` | centred starts | 6 / 8 land | +193.7 |
-| `lunar_agent_robust.pt` | ±6 units, ±29° | **8 / 8 land** | **+313.1** |
+| `lunar_agent_robust.pt` | ±6 units, ±29° | **8 / 8 land** | **+314.2** |
 
 The two seeds the centred policy crashed (`x −4.86` and `x −5.74`) recover to
-+276.1 and +309.2. 3.5 M steps, 29 min on one CUDA card — with eight runs sharing
-the box, so treat that as an upper bound rather than a clean single-run time.
++277.7 and +309.0. The robust run took 5 M steps and about 29 minutes on MPS.
 
 **Why not a Rust backend.** The page replays a recorded trajectory — zero
 inference at view time. A server would only be re-serving constants. Rust earns
@@ -279,7 +289,7 @@ src/lunar_rl/replay.html  the SPA template (one __REPLAY_DATA__ placeholder)
 ```
 
 Two checkpoints ship: `lunar_agent.pt` (centred starts, +282.6) and
-`lunar_agent_robust.pt` (randomised starts, +313.1 on the harder distribution).
+`lunar_agent_robust.pt` (randomised starts, +314.2 on the harder distribution).
 
 Two source files. Flags come from the `Config` dataclass — every field is a
 `--kebab-case` CLI arg automatically.
@@ -341,7 +351,7 @@ more uncomfortable half of the result — a reported return is only reproducible
 the hardware that produced it, which is precisely why the weights are committed
 rather than a training command.
 
-**0.1.1 ships the seed-1 run.** Re-scored on 50 further unseen seeds (200-249) it
+**The v0.1.1 release shipped the seed-1 run.** Re-scored on 50 further unseen seeds (200-249) it
 holds a smaller but real edge over the 0.1.0 robust weights: mean +15.1
 (bootstrap 95% CI [+4.8, +32.8]), median +6.9, better on 33/50 seeds (sign test
 p = 0.033). A paired t-interval spans zero ([−0.95, +31.05]), because a single
@@ -349,6 +359,13 @@ p = 0.033). A paired t-interval spans zero ([−0.95, +31.05]), because a single
 bootstrap are the ones to trust here. The reliability gap is the clearer half:
 50/50 landings against 49/50, return std 16.4 against 55.9, worst case +286.9
 against −66.2, and 204 steps per episode against 238.
+
+The current robust checkpoint was retrained from seed 0 for 5 M steps after the
+partial-chunk loss fix. On the same unseen seeds 200–249 it lands 50/50 with mean
++324.2, median +322.8, standard deviation 16.4 and worst case +285.9. Its final
+body centre stays within 0.76 world units of pad centre; the rendered leg
+endpoints remain between the flags in all 50 episodes, with at least 0.57 units
+of margin.
 
 ---
 
@@ -581,9 +598,10 @@ mode is the only one where the hardware is the thing being used.
 
 ## Reproducibility
 
-Both checkpoints are committed here and attached to the
-[v0.1.1 release](https://github.com/mraad/lunar-rl/releases/tag/v0.1.1), so every
-number in this README can be checked without retraining anything:
+Both checkpoints are committed here. The centred weights and the previous
+robust weights remain attached to the
+[v0.1.1 release](https://github.com/mraad/lunar-rl/releases/tag/v0.1.1); the
+current robust checkpoint is the 5 M-step MPS retrain described above:
 
 ```bash
 uv run lunar-rl-view --ckpt lunar_agent_robust.pt --episodes 8 --greedy --seed 0
@@ -592,9 +610,14 @@ uv run lunar-rl-view --ckpt lunar_agent_robust.pt --episodes 8 --greedy --seed 0
 | checkpoint | sha256 | produced by |
 |---|---|---|
 | `lunar_agent.pt` | `06bed623…958faec7` | `uv run lunar-rl --total-steps 2500000 --num-envs 16 --device cpu` |
-| `lunar_agent_robust.pt` | `122ab5fc…1f2fe2` | `uv run lunar-rl --total-steps 3500000 --num-envs 16 --device cuda --seed 1 --start-x 6 --start-tilt 0.5` |
+| `lunar_agent_robust.pt` | `e61104b4…dd6663` | candidate generated by `uv run lunar-rl --total-steps 5000000 --num-envs 16 --device mps --seed 0 --start-x 6 --start-tilt 0.5 --save dist/lunar_agent_robust_candidate.pt` |
 
-The robust weights changed in 0.1.1. The
+The robust training command writes only the candidate artifact. After its
+checksum, replay, and held-out evaluation pass, copy it to
+`lunar_agent_robust.pt`, replace that file's entry in `checkpoints.sha256`, and
+run `shasum -a 256 -c checkpoints.sha256` before using the replay commands.
+
+The robust weights changed in 0.1.1 and again in this branch. The
 [v0.1.0 release](https://github.com/mraad/lunar-rl/releases/tag/v0.1.0) still
 carries the previous pair, kept for comparison; `lunar_agent.pt` is byte-identical
 across both releases, but its `lunar_agent_robust.pt` is the 320.9 run the seed
@@ -603,10 +626,11 @@ table above measures against.
 ```
 $ shasum -a 256 lunar_agent.pt lunar_agent_robust.pt
 06bed623de41bee8283b7168533796b6a373f0ec57fb13f87694db31958faec7  lunar_agent.pt
-122ab5fcbdacf4936b7da5ab9b11c5b25145bb3775557fa3627f3eeafa1f2fe2  lunar_agent_robust.pt
+e61104b4535ff0f069de058a1b5dc4c711aff072bf96b84853c96856c2dd6663  lunar_agent_robust.pt
 ```
 
-`lunar_agent.pt`, the M4 throughput tables and the spawn study were produced on:
+`lunar_agent.pt`, the current `lunar_agent_robust.pt`, the M4 throughput tables
+and the spawn study were produced on:
 
 | | |
 |---|---|
@@ -616,7 +640,7 @@ $ shasum -a 256 lunar_agent.pt lunar_agent_robust.pt
 | gymnasium | 1.3.0 |
 | numpy | 2.5.2 |
 
-`lunar_agent_robust.pt`, the CUDA tables and the seed sweep were produced on:
+The CUDA tables and the historical seed sweep were produced on:
 
 | | |
 |---|---|
@@ -628,15 +652,17 @@ $ shasum -a 256 lunar_agent.pt lunar_agent_robust.pt
 | gymnasium | 1.3.0 |
 | numpy | 2.5.2 |
 
-Both shipped checkpoints were re-verified there against their committed
-checksums and reproduce their published evaluation numbers exactly.
+Those CUDA results were re-verified on that host. The current robust checkpoint
+was trained and evaluated on the M4 host above; its committed checksum identifies
+the checkpoint bytes exactly, while the published evaluation applies to that
+recorded environment.
 
 `uv.lock` pins the full dependency graph, and seeds are fixed (`--seed`, default
 1). **Retraining will not reproduce these weights bit-for-bit** — Box2D, MPS and
 CUDA kernels are not deterministic across backends or hardware, and PyTorch makes
 no cross-device bitwise guarantee. Expect the same learning curve shape and final
-performance band, not identical numbers. The checkpoints are shipped precisely so
-that evaluation results *are* exactly reproducible.
+performance band, not identical numbers. The checkpoints are shipped so the
+published policies can be evaluated without retraining.
 
 ## Known ceilings
 

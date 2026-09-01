@@ -112,17 +112,13 @@ class PixelEncoder(nn.Module):
 # --------------------------------------------------------------------------- #
 # transformer
 # --------------------------------------------------------------------------- #
-def rope(x: torch.Tensor, pos: torch.Tensor) -> torch.Tensor:
+def rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     """Rotary position embedding on (B, H, T, Dh).
 
     Rotary is *relative*, so a sliding K-step window during acting and a fixed
     K-step chunk during training see identical geometry.  Absolute learned
     positions would not survive that.
     """
-    dh = x.shape[-1]
-    freq = 1.0 / (10000 ** (torch.arange(0, dh, 2, device=x.device, dtype=x.dtype) / dh))
-    ang = pos.to(x.dtype)[:, None] * freq
-    cos, sin = ang.cos(), ang.sin()
     x1, x2 = x[..., 0::2], x[..., 1::2]
     return torch.stack((x1 * cos - x2 * sin, x1 * sin + x2 * cos), dim=-1).flatten(-2)
 
@@ -146,7 +142,7 @@ class GRUGate(nn.Module):
         r = torch.sigmoid(self.wr(y) + self.ur(x))
         z = torch.sigmoid(self.wz(y) + self.uz(x) - self.bg)
         h = torch.tanh(self.wg(y) + self.ug(r * x))
-        return (1.0 - z) * x + z * h
+        return torch.lerp(x, h, z)
 
 
 class Block(nn.Module):
@@ -159,13 +155,13 @@ class Block(nn.Module):
         self.ff = nn.Sequential(nn.Linear(d, 4 * d), nn.GELU(), nn.Linear(4 * d, d))
         self.g1, self.g2 = GRUGate(d), GRUGate(d)
 
-    def forward(self, x, mask, pos, want_attn: bool = False):
+    def forward(self, x, mask, rotary, want_attn: bool = False):
         b, t, d = x.shape
         q, k, v = (
             u.view(b, t, self.heads, self.dh).transpose(1, 2)
             for u in self.qkv(self.ln1(x)).chunk(3, dim=-1)
         )
-        q, k = rope(q, pos), rope(k, pos)
+        q, k = rope(q, *rotary), rope(k, *rotary)
         if want_attn:
             # Fused SDPA never materialises the probabilities. The viewer wants
             # them, so this path recomputes attention the slow, explicit way.
@@ -205,6 +201,16 @@ class Agent(nn.Module):
         pixels: bool = False,
     ):
         super().__init__()
+        if heads <= 0 or d_model % heads:
+            raise ValueError("d_model must be divisible by a positive number of heads")
+        head_dim = d_model // heads
+        if head_dim % 2:
+            raise ValueError("attention head dimension must be even for RoPE")
+        self.register_buffer(
+            "rope_freq",
+            1.0 / (10000 ** (torch.arange(0, head_dim, 2) / head_dim)),
+            persistent=False,
+        )
         self.vec = nn.Linear(obs_dim, d_model)
         self.act_emb = nn.Embedding(n_actions + 1, d_model)  # +1 = "no previous action"
         self.rew = nn.Linear(1, d_model)
@@ -228,9 +234,11 @@ class Agent(nn.Module):
         h = self.ln_in(tok)
         mask = episode_mask(starts)
         pos = torch.arange(obs.shape[1], device=obs.device)
+        ang = pos.to(h.dtype)[:, None] * self.rope_freq.to(h.dtype)
+        rotary = ang.cos(), ang.sin()
         attns = []
         for blk in self.blocks:
-            h, w = blk(h, mask, pos, want_attn)
+            h, w = blk(h, mask, rotary, want_attn)
             if want_attn:
                 attns.append(w)
         h = self.ln_out(h)

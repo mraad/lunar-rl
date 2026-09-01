@@ -73,7 +73,7 @@ def record(ckpt: str, episodes: int, seed: int, greedy: bool, device_name: str,
         total, done = 0.0, False
         while not done:
             hist.push(obs, prev_act, prev_rew, start, frame)
-            with torch.no_grad():
+            with torch.inference_mode():
                 logits, h, ws = agent(
                     hist.obs, hist.act, hist.rew, hist.start, hist.pix, want_attn=True
                 )
@@ -152,9 +152,10 @@ def main() -> None:
 
     data = record(a.ckpt, a.episodes, a.seed, a.greedy, a.device, a.start_x, a.start_tilt)
     page = TEMPLATE.read_text().replace(
-        "__REPLAY_DATA__", json.dumps(data, separators=(",", ":"))
+        "__REPLAY_DATA__", json.dumps(data, separators=(",", ":")).replace("<", "\\u003c")
     )
     out = pathlib.Path(a.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page)
     mean = np.mean([e["return"] for e in data["episodes"]])
     print(f"wrote {out}  ({out.stat().st_size / 1024:.0f} KB)  mean return {mean:.1f}")
