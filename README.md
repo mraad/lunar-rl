@@ -231,7 +231,7 @@ flags fixes it:
 
 ```bash
 uv run lunar-rl --start-x 6 --start-tilt 0.5 --device mps --seed 0 \
-                --total-steps 5000000 --save lunar_agent_robust.pt
+                --total-steps 5000000 --save dist/lunar_agent_robust_candidate.pt
 ```
 
 | checkpoint | trained on | 8 off-pad seeds | mean return |
@@ -609,7 +609,7 @@ uv run lunar-rl-view --ckpt lunar_agent_robust.pt --episodes 8 --greedy --seed 0
 | checkpoint | sha256 | produced by |
 |---|---|---|
 | `lunar_agent.pt` | `06bed623…958faec7` | `uv run lunar-rl --total-steps 2500000 --num-envs 16 --device cpu` |
-| `lunar_agent_robust.pt` | `e61104b4…dd6663` | `uv run lunar-rl --total-steps 5000000 --num-envs 16 --device mps --seed 0 --start-x 6 --start-tilt 0.5` |
+| `lunar_agent_robust.pt` | `e61104b4…dd6663` | `uv run lunar-rl --total-steps 5000000 --num-envs 16 --device mps --seed 0 --start-x 6 --start-tilt 0.5 --save dist/lunar_agent_robust_candidate.pt` |
 
 The robust weights changed in 0.1.1 and again in this branch. The
 [v0.1.0 release](https://github.com/mraad/lunar-rl/releases/tag/v0.1.0) still
@@ -623,7 +623,8 @@ $ shasum -a 256 lunar_agent.pt lunar_agent_robust.pt
 e61104b4535ff0f069de058a1b5dc4c711aff072bf96b84853c96856c2dd6663  lunar_agent_robust.pt
 ```
 
-`lunar_agent.pt`, the M4 throughput tables and the spawn study were produced on:
+`lunar_agent.pt`, the current `lunar_agent_robust.pt`, the M4 throughput tables
+and the spawn study were produced on:
 
 | | |
 |---|---|
@@ -633,7 +634,7 @@ e61104b4535ff0f069de058a1b5dc4c711aff072bf96b84853c96856c2dd6663  lunar_agent_ro
 | gymnasium | 1.3.0 |
 | numpy | 2.5.2 |
 
-`lunar_agent_robust.pt`, the CUDA tables and the seed sweep were produced on:
+The CUDA tables and the historical seed sweep were produced on:
 
 | | |
 |---|---|
@@ -645,8 +646,9 @@ e61104b4535ff0f069de058a1b5dc4c711aff072bf96b84853c96856c2dd6663  lunar_agent_ro
 | gymnasium | 1.3.0 |
 | numpy | 2.5.2 |
 
-Both shipped checkpoints were re-verified there against their committed
-checksums and reproduce their published evaluation numbers exactly.
+Those CUDA results were re-verified on that host. The current robust checkpoint
+was trained and evaluated on the M4 host above; its committed checksum makes the
+published evaluation exactly reproducible without retraining.
 
 `uv.lock` pins the full dependency graph, and seeds are fixed (`--seed`, default
 1). **Retraining will not reproduce these weights bit-for-bit** — Box2D, MPS and
