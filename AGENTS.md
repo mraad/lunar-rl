@@ -44,7 +44,8 @@ command, hash, and metric affected by the new weights.
 Generate replay HTML without opening a browser unless the user explicitly asks:
 
 ```bash
-uv run lunar-rl-view --ckpt lunar_agent_robust.pt --episodes 5 --seed 0 --greedy
+uv run lunar-rl-view --ckpt lunar_agent_robust.pt --episodes 5 --seed 0 --greedy \
+  --out dist/lunar_replay.html
 ```
 
 The output is self-contained and normally needs no server. If a local server is

@@ -155,6 +155,7 @@ def main() -> None:
         "__REPLAY_DATA__", json.dumps(data, separators=(",", ":")).replace("<", "\\u003c")
     )
     out = pathlib.Path(a.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page)
     mean = np.mean([e["return"] for e in data["episodes"]])
     print(f"wrote {out}  ({out.stat().st_size / 1024:.0f} KB)  mean return {mean:.1f}")

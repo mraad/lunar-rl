@@ -163,6 +163,8 @@ class Config:
             raise ValueError("rollout and chunk must be positive; burn_in cannot be negative")
         if self.num_envs <= 0 or self.total_steps < self.rollout * self.num_envs:
             raise ValueError("total_steps must cover at least one rollout across all environments")
+        if self.minibatches <= 0 or self.epochs <= 0:
+            raise ValueError("minibatches and epochs must be positive")
 
 
 def pin_bundled_cudnn(device: torch.device) -> None:
