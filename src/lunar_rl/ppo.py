@@ -389,8 +389,10 @@ def train(cfg: Config) -> Agent:
                 flush=True,
             )
     envs.close()
-    torch.save({"cfg": cfg.__dict__, "model": agent.state_dict()}, cfg.save)
-    print(f"saved {cfg.save}", flush=True)
+    save = pathlib.Path(cfg.save)
+    save.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"cfg": cfg.__dict__, "model": agent.state_dict()}, save)
+    print(f"saved {save}", flush=True)
     return agent
 
 
