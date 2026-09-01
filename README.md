@@ -17,7 +17,7 @@ uv sync
 uv run python -m lunar_rl.nets          # self-check (masking, two-hot, symlog)
 uv run lunar-rl --total-steps 2500000    # reproduces the shipped lunar_agent.pt
 uv run lunar-rl --pixels --num-envs 8    # pixel obs, transformer earns its keep
-uv run lunar-rl-view --greedy --open     # record episodes -> self-contained replay page
+uv run lunar-rl-view --ckpt lunar_agent_robust.pt --seed 0 --greedy  # replay, no auto-open
 ```
 
 ---
@@ -164,12 +164,22 @@ entropy 0.01, grad-norm clip 0.5, linear LR anneal.
 ## Replay viewer
 
 ```bash
-uv run lunar-rl-view --ckpt lunar_agent.pt --episodes 5 --greedy --open
+uv run lunar-rl-view --ckpt lunar_agent_robust.pt --episodes 5 --seed 0 --greedy
 ```
 
 Rolls out the trained policy, records every step, and writes a **single
 self-contained `lunar_replay.html`** — trajectories inlined, no server, no build
-step, no CORS. Opens over `file://` and survives being emailed.
+step, no CORS. Open the generated file directly; it works over `file://` and
+survives being emailed. Add `--open` only when the browser should launch
+automatically.
+
+An HTTP server is optional. When one is useful, run it from the repository root
+and stop it with <kbd>Ctrl-C</kbd>:
+
+```bash
+uv run python -m http.server 8000 --bind 127.0.0.1
+# http://127.0.0.1:8000/lunar_replay.html
+```
 
 Panels:
 
