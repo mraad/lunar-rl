@@ -158,6 +158,12 @@ class Config:
     def ctx(self) -> int:
         return self.burn_in + self.chunk
 
+    def __post_init__(self) -> None:
+        if self.chunk <= 0 or self.rollout <= 0 or self.burn_in < 0:
+            raise ValueError("rollout and chunk must be positive; burn_in cannot be negative")
+        if self.num_envs <= 0 or self.total_steps < self.rollout * self.num_envs:
+            raise ValueError("total_steps must cover at least one rollout across all environments")
+
 
 def pin_bundled_cudnn(device: torch.device) -> None:
     """Make the wheel's cuDNN win the soname race against a system CUDA install.
@@ -273,10 +279,14 @@ def train(cfg: Config) -> Agent:
 
     # training-window index map: each chunk plus its burn-in prefix
     heads = np.arange(0, T, cfg.chunk)
-    win = np.clip(heads[:, None] + np.arange(-cfg.burn_in, cfg.chunk)[None, :], 0, T - 1)
-    win = torch.as_tensor(win, device=device)
-    loss_mask = torch.zeros(C, device=device)
-    loss_mask[cfg.burn_in :] = 1.0
+    offsets = np.arange(-cfg.burn_in, cfg.chunk)
+    indices = heads[:, None] + offsets[None, :]
+    # Clipped slots only pad the first burn-in and final partial chunk to C;
+    # the mask keeps every synthetic duplicate out of all losses.
+    valid = (indices >= 0) & (indices < T) & (offsets[None, :] >= 0)
+    win = torch.as_tensor(np.clip(indices, 0, T - 1), device=device)
+    loss_mask = torch.as_tensor(valid, dtype=torch.float32, device=device)
+    loss_mask = loss_mask[:, None].expand(-1, N, -1).flatten(0, 1)
 
     iters = cfg.total_steps // (T * N)
     returns, step, t0 = [], 0, time.time()
@@ -288,7 +298,7 @@ def train(cfg: Config) -> Agent:
         agent.eval()
         for t in range(T):
             hist.push(obs, prev_act, prev_rew, start, frame)
-            with torch.no_grad(), autocast():
+            with torch.inference_mode(), autocast():
                 logits, h = fwd(hist.obs, hist.act, hist.rew, hist.start, hist.pix)
                 dist = Categorical(logits=logits[:, -1].float())
                 action = dist.sample()
@@ -317,7 +327,7 @@ def train(cfg: Config) -> Agent:
             if ep is not None:
                 returns.extend(np.asarray(ep["r"])[np.asarray(ep["_r"])].tolist())
 
-        with torch.no_grad():  # bootstrap from the state after the last stored step
+        with torch.inference_mode():  # bootstrap from the state after the last stored step
             hist.push(obs, prev_act, prev_rew, start, frame)
             _, h = fwd(hist.obs, hist.act, hist.rew, hist.start, hist.pix)
             last_val = agent.critic.value(h[:, -1].float())
@@ -352,11 +362,12 @@ def train(cfg: Config) -> Agent:
                     logits, h = fwd(wobs[i], wpa[i], wpr[i], wst[i], None if wpix is None else wpix[i])
                 logits, h = logits.float(), h.float()
                 dist = Categorical(logits=logits)
-                m = loss_mask.expand_as(wact[i])
+                m = loss_mask[i]
                 n = m.sum().clamp_min(1.0)
 
                 a = wadv[i]
-                a = (a - a[:, cfg.burn_in :].mean()) / (a[:, cfg.burn_in :].std() + 1e-8)
+                a = a - (a * m).sum() / n
+                a = a / ((a.square() * m).sum().div(n).sqrt() + 1e-8)
                 ratio = (dist.log_prob(wact[i]) - wlogp[i]).exp()
                 pg = torch.max(-a * ratio, -a * ratio.clamp(1 - cfg.clip, 1 + cfg.clip))
 
