@@ -22,6 +22,19 @@ uv run lunar-rl-view --ckpt lunar_agent_robust.pt --seed 0 --greedy  # replay, n
 
 ---
 
+## Related projects
+
+Three complementary LunarLander control experiments:
+
+| Project | Approach |
+|---|---|
+| [Lunar RL](https://github.com/mraad/lunar-rl) | Transformer PPO policy trained through reinforcement learning |
+| [Lunar MPC](https://github.com/mraad/lunar-mpc) | Adaptive physics model with discrete beam-search predictive control |
+| [Lunar QP](https://github.com/mraad/lunar-qp) | Convex quadratic-programming MPC with discrete engine-pulse allocation |
+
+Each project documents its own setup, assumptions and evaluation. MPC is the
+repeated planning loop; QP is one way to solve the plan within that loop.
+
 ## Read this first
 
 LunarLander's 8-dim state (`x, y, vx, vy, θ, ω, leg1, leg2`) is **fully Markov**.
