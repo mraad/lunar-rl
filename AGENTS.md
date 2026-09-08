@@ -17,6 +17,7 @@ Run these before committing source or checkpoint changes:
 
 ```bash
 uv run python -m lunar_rl.nets
+uv run python -m unittest discover -s tests -v
 uv lock --check --offline
 shasum -a 256 -c checkpoints.sha256
 ```

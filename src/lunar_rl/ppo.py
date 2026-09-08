@@ -1,10 +1,8 @@
-"""PPO over a causal transformer, with chunked BPTT and R2D2-style burn-in.
+"""PPO over a causal transformer with identical acting and update contexts.
 
-Rollout shape: (T, N) transitions from N parallel envs.  For the update the
-rollout is cut into contiguous chunks of `chunk` steps; each chunk is prefixed
-by `burn_in` earlier steps whose only job is to fill attention context.  The
-loss is masked off on the burn-in prefix, so gradients only touch positions
-whose context matches what the actor actually saw.
+Each transition is trained on the final position of its original rolling
+window. Store the pre-rollout history once, then gather windows on demand;
+gradient accumulation bounds memory without changing the minibatch objective.
 """
 
 from __future__ import annotations
@@ -131,8 +129,8 @@ class Config:
     total_steps: int = 1_000_000
     num_envs: int = 16
     rollout: int = 128
-    chunk: int = 24
-    burn_in: int = 8
+    chunk: int = 24          # maximum windows per update forward/backward pass
+    burn_in: int = 8         # legacy context sizing: ctx = burn_in + chunk
     d_model: int = 128
     layers: int = 3
     heads: int = 4
@@ -218,13 +216,31 @@ class History:
         self.pix = z(n, ctx, 1, 84, 84) if pixels else None
 
     def push(self, obs, prev_act, prev_rew, start, pix=None):
-        for name in ("obs", "act", "rew", "start", "pix"):
-            buf = getattr(self, name)
-            if buf is not None:
-                setattr(self, name, torch.roll(buf, -1, dims=1))
-        self.obs[:, -1], self.act[:, -1], self.rew[:, -1], self.start[:, -1] = obs, prev_act, prev_rew, start
-        if self.pix is not None:
-            self.pix[:, -1] = pix
+        self.obs, self.act, self.rew, self.start, self.pix = self.window(
+            obs, prev_act, prev_rew, start, pix
+        )
+
+    def window(self, obs, prev_act, prev_rew, start, pix=None):
+        """Return the next window without mutating history (also for bootstrap)."""
+        return tuple(
+            torch.cat((buf[:, 1:], value[:, None]), dim=1) if buf is not None else None
+            for buf, value in zip(
+                (self.obs, self.act, self.rew, self.start, self.pix),
+                (obs, prev_act, prev_rew, start, pix),
+            )
+        )
+
+
+def context_batch(tokens, indices: torch.Tensor, ctx: int):
+    """Gather exact acting windows from time-major (history prefix + rollout).
+
+    Indices address flattened (time, environment) transitions. Only this batch
+    is materialised, avoiding a ctx-fold expansion of the full pixel rollout.
+    """
+    n = tokens[0].shape[1]
+    times = indices[:, None] // n + torch.arange(ctx, device=indices.device)
+    envs = indices[:, None] % n
+    return tuple(x[times, envs] if x is not None else None for x in tokens)
 
 
 def split_obs(raw, device, pixels):
@@ -279,17 +295,6 @@ def train(cfg: Config) -> Agent:
     start = torch.ones(N, dtype=torch.bool, device=device)
     hist = History(N, C, obs_dim, cfg.pixels, device)
 
-    # training-window index map: each chunk plus its burn-in prefix
-    heads = np.arange(0, T, cfg.chunk)
-    offsets = np.arange(-cfg.burn_in, cfg.chunk)
-    indices = heads[:, None] + offsets[None, :]
-    # Clipped slots only pad the first burn-in and final partial chunk to C;
-    # the mask keeps every synthetic duplicate out of all losses.
-    valid = (indices >= 0) & (indices < T) & (offsets[None, :] >= 0)
-    win = torch.as_tensor(np.clip(indices, 0, T - 1), device=device)
-    loss_mask = torch.as_tensor(valid, dtype=torch.float32, device=device)
-    loss_mask = loss_mask[:, None].expand(-1, N, -1).flatten(0, 1)
-
     iters = cfg.total_steps // (T * N)
     returns, step, t0 = [], 0, time.time()
 
@@ -298,6 +303,12 @@ def train(cfg: Config) -> Agent:
             g["lr"] = cfg.lr * (1.0 - it / iters)
 
         agent.eval()
+        # The first action drops the oldest history token. Preserve the other
+        # C-1 tokens, including real previous-rollout context and reset flags.
+        prefix = tuple(
+            x[:, 1:].transpose(0, 1).clone() if x is not None else None
+            for x in (hist.obs, hist.act, hist.rew, hist.start, hist.pix)
+        )
         for t in range(T):
             hist.push(obs, prev_act, prev_rew, start, frame)
             with torch.inference_mode(), autocast():
@@ -329,9 +340,9 @@ def train(cfg: Config) -> Agent:
             if ep is not None:
                 returns.extend(np.asarray(ep["r"])[np.asarray(ep["_r"])].tolist())
 
-        with torch.inference_mode():  # bootstrap from the state after the last stored step
-            hist.push(obs, prev_act, prev_rew, start, frame)
-            _, h = fwd(hist.obs, hist.act, hist.rew, hist.start, hist.pix)
+        with torch.inference_mode(), autocast():
+            # Peek at the next state; the next rollout pushes it exactly once.
+            _, h = fwd(*hist.window(obs, prev_act, prev_rew, start, frame))
             last_val = agent.critic.value(h[:, -1].float())
 
         # GAE. ponytail: truncation is treated as termination (LunarLander only
@@ -346,40 +357,35 @@ def train(cfg: Config) -> Agent:
             adv[t] = run
         ret = adv + buf["val"]
 
-        # (T, N, ...) -> (nchunk * N, C, ...) training windows
-        def windows(x):
-            w = x[win]                                   # (nchunk, C, N, ...)
-            return w.permute(0, 2, 1, *range(3, w.dim())).flatten(0, 1)
-
-        wobs, wpa, wpr, wst = (windows(buf[k]) for k in ("obs", "prev_act", "prev_rew", "start"))
-        wact, wlogp, wadv, wret = (windows(x) for x in (buf["act"], buf["logp"], adv, ret))
-        wpix = windows(buf["pix"]) if cfg.pixels else None
-        B = wobs.shape[0]
-        mb = max(1, B // cfg.minibatches)
+        tokens = tuple(
+            torch.cat((p, buf[k]), dim=0) if p is not None else None
+            for p, k in zip(prefix, ("obs", "prev_act", "prev_rew", "start", "pix"))
+        )
+        actions, logp, advantages, targets = (
+            x.flatten() for x in (buf["act"], buf["logp"], adv, ret)
+        )
+        B = T * N
+        mb = max(1, math.ceil(B / cfg.minibatches))
 
         agent.train()
         for _ in range(cfg.epochs):
             for i in torch.randperm(B, device=device).split(mb):
-                with autocast():
-                    logits, h = fwd(wobs[i], wpa[i], wpr[i], wst[i], None if wpix is None else wpix[i])
-                logits, h = logits.float(), h.float()
-                dist = Categorical(logits=logits)
-                m = loss_mask[i]
-                n = m.sum().clamp_min(1.0)
-
-                a = wadv[i]
-                a = a - (a * m).sum() / n
-                a = a / ((a.square() * m).sum().div(n).sqrt() + 1e-8)
-                ratio = (dist.log_prob(wact[i]) - wlogp[i]).exp()
-                pg = torch.max(-a * ratio, -a * ratio.clamp(1 - cfg.clip, 1 + cfg.clip))
-
-                pg_loss = (pg * m).sum() / n
-                v_loss = (agent.critic.loss(h, wret[i]) * m).sum() / n
-                ent = (dist.entropy() * m).sum() / n
-                loss = pg_loss + cfg.vf_coef * v_loss - cfg.ent_coef * ent
-
+                a = advantages[i]
+                a = a - a.mean()
+                a = a / (a.square().mean().sqrt() + 1e-8)
                 opt.zero_grad(set_to_none=True)
-                loss.backward()
+                # Each sample has its own C-token causal graph. A single longer
+                # sequence would let older context leak through earlier layers.
+                for j, aj in zip(i.split(cfg.chunk), a.split(cfg.chunk)):
+                    with autocast():
+                        logits, h = fwd(*context_batch(tokens, j, C))
+                    logits, h = logits[:, -1].float(), h[:, -1].float()
+                    dist = Categorical(logits=logits)
+                    ratio = (dist.log_prob(actions[j]) - logp[j]).exp()
+                    pg = torch.max(-aj * ratio, -aj * ratio.clamp(1 - cfg.clip, 1 + cfg.clip))
+                    loss = (pg.sum() + cfg.vf_coef * agent.critic.loss(h, targets[j]).sum()
+                            - cfg.ent_coef * dist.entropy().sum()) / i.numel()
+                    loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), cfg.max_grad_norm)
                 opt.step()
 

@@ -115,9 +115,8 @@ class PixelEncoder(nn.Module):
 def rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     """Rotary position embedding on (B, H, T, Dh).
 
-    Rotary is *relative*, so a sliding K-step window during acting and a fixed
-    K-step chunk during training see identical geometry.  Absolute learned
-    positions would not survive that.
+    Rotary encodes relative offsets within the window. Acting and training must
+    still supply identical context; relative positions do not fix missing tokens.
     """
     x1, x2 = x[..., 0::2], x[..., 1::2]
     return torch.stack((x1 * cos - x2 * sin, x1 * sin + x2 * cos), dim=-1).flatten(-2)

@@ -7,6 +7,11 @@ lands **8/8** from randomised off-pad, tilted starts. Ships a self-contained
 replay page that shows the policy, the critic, and what the transformer's
 attention window is actually reading.
 
+The shipped checkpoints and performance tables predate the acting/update context
+fix. They remain historical results; the corrected trainer's first candidate
+failed the promotion checks and still needs baseline validation. See
+[TODO.md](TODO.md) for the validation checklist.
+
 ![The replay viewer: descent canvas, telemetry, policy distribution, critic trace and attention strip](docs/replay.png)
 
 Requires Python 3.11–3.12 (Box2D wheel availability). Trained weights for both
@@ -15,7 +20,8 @@ checkpoints are committed, so the viewer works straight after `uv sync`.
 ```bash
 uv sync
 uv run python -m lunar_rl.nets          # self-check (masking, two-hot, symlog)
-uv run lunar-rl --total-steps 2500000    # reproduces the shipped lunar_agent.pt
+uv run python -m unittest discover -s tests -v  # acting/update context regression
+uv run lunar-rl --total-steps 2500000 --save dist/lunar_agent_candidate.pt
 uv run lunar-rl --pixels --num-envs 8    # pixel obs, transformer earns its keep
 uv run lunar-rl-view --ckpt lunar_agent_robust.pt --seed 0 --greedy  # replay, no auto-open
 ```
@@ -114,11 +120,9 @@ et al.'s **GTrXL** fixes this with two changes, both implemented here:
   identity and has to earn its contribution. This is the single change that makes
   the difference between converging and not.
 
-**RoPE, not learned positions.** Rotary embeddings encode *relative* offset. That
-is load-bearing here: while acting, the model sees a sliding window ending at
-`t`; while training, it sees a fixed chunk. Absolute positions would make the same
-transition look different in the two regimes. Relative geometry makes them
-identical.
+**RoPE, not learned positions.** Rotary embeddings encode relative offsets.
+Acting and training now use the same complete rolling window ending at `t`.
+RoPE alone cannot correct missing context or make different windows equivalent.
 
 **Episode masking.** The attention mask is `causal ∧ same-episode`, built by
 cumsum over per-step episode-start flags:
@@ -130,7 +134,7 @@ mask = (seg[:, :, None] == seg[:, None, :]) & tril(ones(T, T))
 
 Without the same-episode term, a chunk straddling a reset lets the agent condition
 a fresh landing on the previous episode's crash. With it, a rollout can be cut at
-arbitrary points — which is what makes the flat chunked buffer below legal.
+arbitrary points while preserving each action's rolling context.
 `nets._demo()` asserts this behaviourally: perturbing the first half of a chunk
 leaves the second half's logits bit-identical.
 
@@ -146,28 +150,33 @@ roughly −400 to +300, and shaped pixel variants shift that again. The binned h
 is scale-free and gives no gradient advantage to outlier returns. Logits are
 zero-initialised, so `V = 0` exactly at step 0 — no early bootstrap blow-up.
 
-### 5. PPO with chunked BPTT and burn-in
+### 5. PPO with exact rolling contexts
 
-Rollout is `(T=128, N=16)`. For the update it is cut into contiguous `chunk=24`
-windows, each prefixed with `burn_in=8` earlier steps:
+Rollout is `(T=128, N=16)`. Each transition is trained on its own `K=32`-token
+window, with the actor, critic, and entropy losses applied only at the final
+position. Gradients still propagate through the earlier context tokens.
 
-```
-rollout:  |························ T = 128 ························|
-window 0:        [burn 8][         chunk 24         ]
-window 1:                       [burn 8][      chunk 24      ]
-loss:              masked   ←→   trained
-```
+The trainer saves the `K-1` tokens preceding the first action once per rollout.
+It combines that prefix with the rollout tokens and gathers windows on demand.
+This preserves initial padding, episode-start masks, previous actions/rewards,
+pixel frames, and history across rollout boundaries. Every real transition is
+used once per epoch, including final partial batches; no duplicate padding
+transitions enter the losses. Bootstrap evaluates a temporary next-state window
+without advancing the acting history.
 
-A transformer trained on naive fixed chunks sees an empty context at every chunk
-head, while the actor that generated those actions had a full window. That
-mismatch biases the ratio in the PPO objective. R2D2's burn-in fixes it: the
-prefix fills attention context, its loss is masked to zero, and gradients only
-touch positions whose context matches what the actor actually saw.
+The previous chunked update supplied only 8 preceding tokens at a chunk head,
+versus up to 31 when acting. Increasing the prefix of one shared training
+sequence is insufficient: earlier transformer layers can carry context older
+than the acting window into later positions. Independent windows preserve the
+same causal computation at every trained position.
 
-One forward pass per window produces logits and values for **all 32 positions** at
-once — the reason chunked attention beats step-by-step recurrence in wall-clock.
-Acting still re-runs the K-step window each step (`History.push` rolls the buffer);
-at `K=32` and `d=128` that is cheaper than the Box2D step itself.
+For checkpoint/CLI compatibility, `K = burn_in + chunk` remains unchanged.
+`chunk` now also caps the number of windows per update forward/backward pass;
+`burn_in` only contributes to context length. Gradients accumulate over these
+small batches before one clipped optimizer step per PPO minibatch. Advantage
+normalization and loss scaling use the whole minibatch, including short tails.
+Exact windows require more computation than the old shared-chunk update; the
+historical throughput measurements below do not apply to this trainer.
 
 Everything else is textbook PPO: GAE(λ=0.95), clip 0.2, 4 epochs × 4 minibatches,
 entropy 0.01, grad-norm clip 0.5, linear LR anneal.
@@ -278,8 +287,8 @@ different computation than the one that picked the action.
 | PPO | Schulman et al. 2017 | on-policy backbone that tolerates a big model |
 | Impala CNN | Espeholt et al. 2018 | pixel encoder that survives long runs |
 | GTrXL | Parisotto et al. 2020 | transformers that don't diverge in online RL |
-| R2D2 burn-in | Kapturowski et al. 2019 | correct context for chunked sequence training |
-| RoPE | Su et al. 2021 | acting window ≡ training chunk |
+| R2D2 burn-in | Kapturowski et al. 2019 | historical inspiration; replaced here by exact rolling-window replay |
+| RoPE | Su et al. 2021 | relative positions within each rolling window |
 | Two-hot symlog | Hafner et al. 2023 (DreamerV3) | scale-free critic, no `vf_coef` retuning |
 
 **Deliberately not here.** *Decision Transformer / Trajectory Transformer* are
@@ -296,7 +305,7 @@ constraint, but it is a much larger build.
 ```
 pyproject.toml          uv project; box2d-py gets swig via extra-build-dependencies
 src/lunar_rl/nets.py    encoders, GTrXL blocks, masking, critic + self-check
-src/lunar_rl/ppo.py     env wrappers, rollout, GAE, chunked update, CLI
+src/lunar_rl/ppo.py     env wrappers, rollout, GAE, rolling-window update, CLI
 src/lunar_rl/viewer.py  rollout recorder; inlines trajectories into the page
 src/lunar_rl/replay.html  the SPA template (one __REPLAY_DATA__ placeholder)
 ```
@@ -673,16 +682,16 @@ recorded environment.
 `uv.lock` pins the full dependency graph, and seeds are fixed (`--seed`, default
 1). **Retraining will not reproduce these weights bit-for-bit** — Box2D, MPS and
 CUDA kernels are not deterministic across backends or hardware, and PyTorch makes
-no cross-device bitwise guarantee. Expect the same learning curve shape and final
-performance band, not identical numbers. The checkpoints are shipped so the
+no cross-device bitwise guarantee. The corrected trainer's learning curve and
+performance still need measurement. The checkpoints are shipped so the
 published policies can be evaluated without retraining.
 
 ## Known ceilings
 
 - Truncation is treated as termination in the GAE recursion. LunarLander truncates
-  only at 1000 steps, long after any competent policy has landed. Bootstrapping
-  from `final_obs` needs that state's attention context, which the flat buffer does
-  not carry — real work for a negligible bias here.
+  at 1000 steps. Correct bootstrapping must evaluate `final_obs` with the
+  pre-reset history and separately stop GAE propagation across the reset. This
+  remains a TODO, especially for hovering policies and shortened time limits.
 - Acting re-runs the full K-step window per step instead of keeping a KV cache.
   Free to fix if `K` grows past ~64.
 - Nearest-neighbour frame downsampling, to avoid an OpenCV dependency.
