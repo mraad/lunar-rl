@@ -17,6 +17,14 @@ failed the promotion checks and still needs baseline validation. See
 Requires Python 3.11–3.12 (Box2D wheel availability). Trained weights for both
 checkpoints are committed, so the viewer works straight after `uv sync`.
 
+## Showcase
+
+[![Transformer PPO landing in LunarLander](docs/showcase.gif)](docs/showcase.mp4)
+
+This is an actual greedy run of the shipped robust policy from an off-pad,
+tilted start. Click the preview for the MP4. Recreate both files with
+`uv run python scripts/record_showcase.py`; encoding requires `ffmpeg`.
+
 ```bash
 uv sync
 uv run python -m lunar_rl.nets          # self-check (masking, two-hot, symlog)
